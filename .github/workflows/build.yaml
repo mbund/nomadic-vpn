@@ -1,0 +1,46 @@
+name: Build and Release
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.21"
+
+      - name: Build
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o nomadic-vpn-linux-amd64
+          GOOS=linux GOARCH=arm64 go build -o nomadic-vpn-linux-arm64
+          GOOS=linux GOARCH=riscv64 go build -o nomadic-vpn-linux-riscv64
+          GOOS=windows GOARCH=amd64 go build -o nomadic-vpn-windows-amd64.exe
+          GOOS=darwin GOARCH=arm64 go build -o nomadic-vpn-darwin-arm64
+          GOOS=darwin GOARCH=amd64 go build -o nomadic-vpn-darwin-amd64
+
+      - name: Get tag name
+        id: tag-name
+        run: |
+          echo "tagname=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ steps.tag-name.outputs.tagname }} -t "nomadic-vpn" -n "Binary release (${{ steps.tag-name.outputs.tagname }})"
+          gh release upload ${{ steps.tag-name.outputs.tagname }} nomadic-vpn-linux-amd64
+          gh release upload ${{ steps.tag-name.outputs.tagname }} nomadic-vpn-linux-arm64
+          gh release upload ${{ steps.tag-name.outputs.tagname }} nomadic-vpn-linux-riscv64
+          gh release upload ${{ steps.tag-name.outputs.tagname }} nomadic-vpn-windows-amd64.exe
+          gh release upload ${{ steps.tag-name.outputs.tagname }} nomadic-vpn-darwin-arm64
+          gh release upload ${{ steps.tag-name.outputs.tagname }} nomadic-vpn-darwin-amd64
