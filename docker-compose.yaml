@@ -1,0 +1,10 @@
+services:
+  test:
+    build:
+      context: ./test
+      dockerfile: Dockerfile
+    ports:
+      - 2211:22
+    # develop:
+    #   watch:
+    #     - action: rebuild

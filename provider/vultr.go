@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mbund/nomadic-vpn/core"
 	"github.com/vultr/govultr/v3"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/oauth2"
@@ -58,6 +59,11 @@ type VultrProvider struct {
 
 func (v VultrProvider) Bootstrap() error {
 	apiKey := os.Getenv("VULTR_API_KEY")
+	// _, err := db.GlobalStore.Db.Exec("UPDATE keys SET vultr = ? WHERE id=0", apiKey)
+	// if err != nil {
+	// 	fmt.Println("failed to update vultr key: %s", err)
+	// }
+	return nil
 
 	config := &oauth2.Config{}
 	ctx := context.Background()
@@ -92,19 +98,23 @@ func (v VultrProvider) Bootstrap() error {
 		panic("Failed to create instance")
 	}
 
-	for instance.Status != "active" {
-		instance, _, err = vultrClient.Instance.Get(context.Background(), instance.ID)
+	instanceId := instance.ID
+	fmt.Println("Creating instance")
+
+	for instance == nil || instance.Status != "active" {
+		time.Sleep(30 * time.Second)
+		instance, _, _ = vultrClient.Instance.Get(context.Background(), instanceId)
 		if err != nil {
 			fmt.Println(err)
 		}
-		time.Sleep(5 * time.Second)
 	}
 
 	ip := instance.MainIP
+	fmt.Println("Instance created with IP: ", ip)
 
 	p, _ := ssh.MarshalPrivateKey(privateKey, "nomadic-vpn")
 	privateKeyPem := pem.EncodeToMemory(p)
-	// os.WriteFile("ssh_key", privateKeyPem, 0600)
+	os.WriteFile("ssh_key", privateKeyPem, 0600)
 
 	signer, _ := ssh.ParsePrivateKey(privateKeyPem)
 	sshConfig := &ssh.ClientConfig{
@@ -113,8 +123,10 @@ func (v VultrProvider) Bootstrap() error {
 			ssh.PublicKeys(signer),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         2 * time.Minute,
 	}
 
+	fmt.Println("Dialing SSH")
 	conn, err := ssh.Dial("tcp", ip+":22", sshConfig)
 	if err != nil {
 		log.Fatalf("Failed to dial: %v", err)
@@ -122,18 +134,7 @@ func (v VultrProvider) Bootstrap() error {
 
 	defer conn.Close()
 
-	session, err := conn.NewSession()
-	if err != nil {
-		log.Fatalf("Failed to create session: %v", err)
-	}
-	defer session.Close()
-
-	output, err := session.CombinedOutput("ls /")
-	if err != nil {
-		log.Fatalf("Failed to run command: %v", err)
-	}
-
-	fmt.Println(string(output))
+	core.Bootstrap(conn)
 
 	return nil
 }

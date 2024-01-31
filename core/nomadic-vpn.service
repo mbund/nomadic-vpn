@@ -1,0 +1,11 @@
+[Unit]
+Description=Nomadic VPN Server
+Documentation=https://github.com/mbund/nomadic-vpn
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/nomadic-vpn web
+WorkingDirectory=/root
+
+[Install]
+WantedBy=default.target
