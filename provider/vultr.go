@@ -11,13 +11,17 @@ import (
 	"time"
 
 	"github.com/mbund/nomadic-vpn/core"
+	"github.com/mbund/nomadic-vpn/db"
 	"github.com/vultr/govultr/v3"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/oauth2"
 )
 
 func initializeVultr() {
-	apiKey := os.Getenv("VULTR_API_KEY")
+	apiKey, err := db.GetVultrAPIKey()
+	if err != nil {
+		return
+	}
 
 	config := &oauth2.Config{}
 	ctx := context.Background()
@@ -58,12 +62,10 @@ type VultrProvider struct {
 }
 
 func (v VultrProvider) Bootstrap() error {
-	apiKey := os.Getenv("VULTR_API_KEY")
-	// _, err := db.GlobalStore.Db.Exec("UPDATE keys SET vultr = ? WHERE id=0", apiKey)
-	// if err != nil {
-	// 	fmt.Println("failed to update vultr key: %s", err)
-	// }
-	return nil
+	apiKey, err := db.GetVultrAPIKey()
+	if err != nil {
+		return nil
+	}
 
 	config := &oauth2.Config{}
 	ctx := context.Background()
@@ -110,7 +112,7 @@ func (v VultrProvider) Bootstrap() error {
 	}
 
 	ip := instance.MainIP
-	fmt.Println("Instance created with IP: ", ip)
+	fmt.Printf("Instance created with IP: %v\n", ip)
 
 	p, _ := ssh.MarshalPrivateKey(privateKey, "nomadic-vpn")
 	privateKeyPem := pem.EncodeToMemory(p)
@@ -123,7 +125,6 @@ func (v VultrProvider) Bootstrap() error {
 			ssh.PublicKeys(signer),
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         2 * time.Minute,
 	}
 
 	fmt.Println("Dialing SSH")
