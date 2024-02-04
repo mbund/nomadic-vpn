@@ -2,39 +2,23 @@ package core
 
 import (
 	"bytes"
-	"context"
+	"crypto/tls"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"text/template"
 	"time"
 
-	scp "github.com/bramvdbogaerde/go-scp"
 	"github.com/mbund/nomadic-vpn/db"
 	"github.com/spf13/viper"
-	"golang.org/x/crypto/ssh"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-func scpWriteData(sshClient *ssh.Client, data []byte, remotePath string) error {
-	reader := bytes.NewReader(data)
-	scpClient, err := scp.NewClientBySSH(sshClient)
-	if err != nil {
-		return fmt.Errorf("failed to create client: %v", err)
-	}
-	defer scpClient.Close()
-
-	err = scpClient.CopyFile(context.Background(), reader, remotePath, "0644")
-	if err != nil {
-		return fmt.Errorf("failed to copy service file to server: %v", err)
-	}
-
-	return nil
-}
-
-func generateClient(allowedIPs string) db.Client {
+func GenerateWireguardClient(allowedIPs string) db.Client {
 	key, _ := wgtypes.GenerateKey()
 	presharedKey, _ := wgtypes.GenerateKey()
 
@@ -71,7 +55,7 @@ func writeWireguardClientConfig(writer io.Writer, client db.Client, endpoint str
 	})
 }
 
-func Bootstrap(sshClient *ssh.Client) error {
+func Bootstrap(host string) (clientConfig string, err error) {
 	key, _ := wgtypes.GeneratePrivateKey()
 
 	server := db.Server{
@@ -80,63 +64,34 @@ func Bootstrap(sshClient *ssh.Client) error {
 		PublicKey:  key.PublicKey().String(),
 	}
 
-	client := generateClient("10.0.0.2/32")
+	client := GenerateWireguardClient("10.0.0.2/32")
+
+	var clientConfigBuf bytes.Buffer
+	writeWireguardClientConfig(&clientConfigBuf, client, fmt.Sprintf("%v:51820", host), server.PublicKey)
+
+	var serverConfigBuf bytes.Buffer
+	writeWireguardServerConfig(&serverConfigBuf, server, []db.Client{client})
+	e := os.WriteFile("/etc/wireguard/wg0.conf", serverConfigBuf.Bytes(), 0644)
+	if e != nil {
+		return "", fmt.Errorf("failed to write wireguard server config: %v", e)
+	}
 
 	db.AddClient(client)
 	db.SetServer(server)
 
-	writeWireguardClientConfig(os.Stdout, client, "45.77.14.43:51820", server.PublicKey)
-
-	err := runCommand(sshClient, "mkdir -p /etc/wireguard")
-	if err != nil {
-		return fmt.Errorf("failed to create wireguard directory: %v", err)
-	}
-
-	var configBuf bytes.Buffer
-	writeWireguardServerConfig(&configBuf, server, []db.Client{client})
-	err = scpWriteData(sshClient, configBuf.Bytes(), "/etc/wireguard/wg0.conf")
-	if err != nil {
-		return fmt.Errorf("failed to write wireguard server config: %v", err)
-	}
-
-	// run commands
-	commands := []string{
-		"wget https://github.com/mbund/nomadic-vpn/releases/latest/download/nomadic-vpn-linux-amd64 -O /usr/local/sbin/nomadic-vpn",
-		"apt install -y wireguard",
-		"systemctl enable nomadic-vpn.service wireguard-config.path wireguard-config.service",
-		"systemctl start nomadic-vpn.service wireguard-config.path wireguard-config.service",
-		"ufw disable",
-	}
-
-	for _, command := range commands {
-		err := runCommand(sshClient, command)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return clientConfigBuf.String(), nil
 }
 
-func runCommand(sshClient *ssh.Client, command string) error {
-	session, err := sshClient.NewSession()
-	if err != nil {
-		return fmt.Errorf("failed to create session: %v", err)
+func Connect(baseUrl string, accessToken string) (string, error) {
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // allow self signed certs
 	}
-	defer session.Close()
+	client := &http.Client{Transport: tr}
 
-	fmt.Printf("Running command `%v`\n", command)
-	_, err = session.CombinedOutput(command)
-	if err != nil {
-		return fmt.Errorf("failed to run command %v: %v", command, err)
-	}
-
-	return nil
-}
-
-func Connect(host string, accessToken string) error {
 	for {
-		result, err := http.Get(fmt.Sprintf("https://%v/healthz", host))
+		result, err := client.Get(fmt.Sprintf("%v/healthz", baseUrl))
+		fmt.Println(result)
+		fmt.Println(err)
 		if err != nil {
 			time.Sleep(5 * time.Second)
 			continue
@@ -147,9 +102,33 @@ func Connect(host string, accessToken string) error {
 		}
 	}
 
-	fmt.Println("Connected to server")
+	fmt.Println("Server is up, initializing DB")
 
-	return nil
+	formData := url.Values{
+		"vultrApiKey":   {viper.GetString("VULTR_API_KEY")},
+		"duckDnsToken":  {viper.GetString("DUCKDNS_TOKEN")},
+		"duckDnsDomain": {viper.GetString("DUCKDNS_DOMAIN")},
+	}
+
+	req, _ := http.NewRequest("POST", fmt.Sprintf("%v/api/initialize", baseUrl), bytes.NewBufferString(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %v", accessToken))
+
+	res, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize server: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status code: %v", res.Status)
+	}
+
+	defer res.Body.Close()
+	var apiResponse db.ApiInitializeResponse
+	if err := json.NewDecoder(res.Body).Decode(&apiResponse); err != nil {
+		return "", fmt.Errorf("failed to decode response: %v", err)
+	}
+
+	return apiResponse.WireguardConf, nil
 }
 
 func UpdateDuckDNS(ip string) (string, error) {

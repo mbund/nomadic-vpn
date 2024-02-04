@@ -10,9 +10,17 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var DB *sql.DB
+var dB *sql.DB
 
-func CreateDb(dbPath string) (*sql.DB, error) {
+func InitDb() {
+	database, err := createDb("nomadic-vpn.db")
+	if err != nil {
+		panic(err)
+	}
+	dB = database
+}
+
+func createDb(dbPath string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create parent directories for the database: %s", err)
 	}
@@ -56,26 +64,31 @@ func CreateDb(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-func SyncViperConfigIntoDB() {
-	vultrApiKey := viper.GetString("VULTR_API_KEY")
+func SetVultrApiKey(vultrApiKey string) {
 	if len(vultrApiKey) > 0 {
-		_, _ = DB.Exec("UPDATE config SET vultrapikey = ? WHERE id = 0", vultrApiKey)
+		_, _ = dB.Exec("UPDATE config SET vultrapikey = ? WHERE id = 0", vultrApiKey)
 	}
+}
 
-	duckdnsToken := viper.GetString("DUCKDNS_TOKEN")
-	if len(duckdnsToken) > 0 {
-		_, _ = DB.Exec("UPDATE config SET duckdnstoken = ? WHERE id = 0", duckdnsToken)
+func SetDuckDnsToken(duckDnsToken string) {
+	if len(duckDnsToken) > 0 {
+		_, _ = dB.Exec("UPDATE config SET duckdnstoken = ? WHERE id = 0", duckDnsToken)
 	}
+}
 
-	duckdnsDomain := viper.GetString("DUCKDNS_DOMAIN")
-	if len(duckdnsDomain) > 0 {
-		_, _ = DB.Exec("UPDATE config SET duckdnsdomain = ? WHERE id = 0", duckdnsDomain)
+func SetDuckDnsDomain(duckDnsDomain string) {
+	if len(duckDnsDomain) > 0 {
+		_, _ = dB.Exec("UPDATE config SET duckdnsdomain = ? WHERE id = 0", duckDnsDomain)
 	}
 }
 
 func GetVultrAPIKey() (string, error) {
+	if dB == nil {
+		return viper.GetString("VULTR_API_KEY"), nil
+	}
+
 	var vultrApiKey string
-	DB.QueryRow("SELECT vultrapikey FROM config WHERE id = 0").Scan(&vultrApiKey)
+	dB.QueryRow("SELECT vultrapikey FROM config WHERE id = 0").Scan(&vultrApiKey)
 	if len(vultrApiKey) > 0 {
 		return vultrApiKey, nil
 	}
@@ -98,7 +111,7 @@ type Client struct {
 }
 
 func GetClients() []Client {
-	rows, err := DB.Query("SELECT privatekey, publickey, presharedkey, allowedips FROM client")
+	rows, err := dB.Query("SELECT privatekey, publickey, presharedkey, allowedips FROM client")
 	if err != nil {
 		return nil
 	}
@@ -119,7 +132,7 @@ func GetClients() []Client {
 
 func GetServer() (Server, error) {
 	var server Server
-	err := DB.QueryRow("SELECT privatekey, publickey, address, listenport FROM server WHERE id = 0").Scan(&server.PrivateKey, &server.PublicKey, &server.Address, &server.ListenPort)
+	err := dB.QueryRow("SELECT privatekey, publickey, address, listenport FROM server WHERE id = 0").Scan(&server.PrivateKey, &server.PublicKey, &server.Address, &server.ListenPort)
 	if err != nil {
 		return Server{}, err
 	}
@@ -128,11 +141,15 @@ func GetServer() (Server, error) {
 }
 
 func SetServer(server Server) error {
-	_, err := DB.Exec("UPDATE server SET privatekey = ?, publickey = ?, address = ?, listenport = ? WHERE id = 0", server.PrivateKey, server.PublicKey, server.Address, server.ListenPort)
+	_, err := dB.Exec("UPDATE server SET privatekey = ?, publickey = ?, address = ?, listenport = ? WHERE id = 0", server.PrivateKey, server.PublicKey, server.Address, server.ListenPort)
 	return err
 }
 
 func AddClient(client Client) error {
-	_, err := DB.Exec("INSERT INTO client (privatekey, publickey, presharedkey, allowedips) VALUES (?, ?, ?, ?)", client.PrivateKey, client.PublicKey, client.PresharedKey, client.AllowedIPs)
+	_, err := dB.Exec("INSERT INTO client (privatekey, publickey, presharedkey, allowedips) VALUES (?, ?, ?, ?)", client.PrivateKey, client.PublicKey, client.PresharedKey, client.AllowedIPs)
 	return err
+}
+
+type ApiInitializeResponse struct {
+	WireguardConf string `json:"conf"`
 }

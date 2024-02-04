@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/mbund/nomadic-vpn/core"
 	"github.com/mbund/nomadic-vpn/provider"
+	"github.com/mdp/qrterminal/v3"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -59,11 +61,19 @@ var bootstrapCmd = &cobra.Command{
 		}
 
 		fmt.Println("Waiting for server to come online")
-		err = core.Connect(host, accessToken)
+		wireguardClientConf, err := core.Connect(fmt.Sprintf("https://%v", host), accessToken)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
+
+		fmt.Println("VPN is ready to use!")
+		fmt.Println("Use the following wireguard config")
+		fmt.Println("----------------------------------------")
+		fmt.Println(wireguardClientConf)
+		fmt.Println("----------------------------------------")
+		fmt.Println("Or scan the following QR Code on your phone")
+		qrterminal.Generate(wireguardClientConf, qrterminal.L, os.Stdout)
 	},
 }
 

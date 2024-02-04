@@ -3,7 +3,6 @@ package cmd
 import (
 	"os"
 
-	"github.com/mbund/nomadic-vpn/db"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -29,5 +28,4 @@ func initConfig() {
 	viper.AutomaticEnv()
 	viper.SetConfigFile(".env")
 	viper.ReadInConfig()
-	db.SyncViperConfigIntoDB()
 }

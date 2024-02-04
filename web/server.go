@@ -8,6 +8,9 @@ import (
 
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
+	"github.com/mbund/nomadic-vpn/core"
+	"github.com/mbund/nomadic-vpn/db"
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -15,8 +18,40 @@ func Run(port uint16, domain string, accessToken string) {
 	e := echo.New()
 
 	e.GET("/", func(c echo.Context) error {
-		return Render(c, http.StatusOK, Home("there!"))
+		x := Render(c, http.StatusOK, Connections())
+		fmt.Println(x)
+		return x
 	})
+
+	e.GET("/settings", func(c echo.Context) error {
+		return Render(c, http.StatusOK, Settings())
+	})
+
+	e.POST("/api/initialize", func(c echo.Context) error {
+		fmt.Println("Initializing")
+		fmt.Println(c)
+		fmt.Println(c.Request())
+		fmt.Println(c.Request().Form)
+		authHeader := c.Request().Header.Get("Authorization")
+		if authHeader != fmt.Sprintf("Bearer %s", accessToken) {
+			return c.JSON(http.StatusUnauthorized, nil)
+		}
+
+		db.InitDb()
+		db.SetVultrApiKey(c.Request().FormValue("vultrApiKey"))
+		db.SetDuckDnsToken(c.Request().FormValue("duckDnsToken"))
+		db.SetDuckDnsDomain(c.Request().FormValue("duckDnsDomain"))
+
+		clientConfig, err := core.Bootstrap(domain)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, nil)
+		}
+
+		return c.JSON(http.StatusOK, db.ApiInitializeResponse{
+			WireguardConf: clientConfig,
+		})
+	})
+
 	e.GET("/healthz", func(c echo.Context) error {
 		var result struct {
 			Status string `json:"status"`
@@ -29,7 +64,9 @@ func Run(port uint16, domain string, accessToken string) {
 		e.Logger.Fatal(e.Start(fmt.Sprintf(":%d", port)))
 	} else {
 		e.AutoTLSManager.HostPolicy = autocert.HostWhitelist(domain)
-		e.AutoTLSManager.Client.DirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
+		e.AutoTLSManager.Client = &acme.Client{
+			DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
+		}
 		e.AutoTLSManager.Cache = autocert.DirCache("/var/www/.cache")
 		e.Logger.Fatal(e.StartAutoTLS(fmt.Sprintf(":%d", port)))
 	}

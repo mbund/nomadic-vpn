@@ -19,8 +19,8 @@ func TestWriteConfig(t *testing.T) {
 	}
 
 	clients := []db.Client{
-		generateClient("10.0.0.2/32"),
-		generateClient("10.0.0.3/32"),
+		GenerateWireguardClient("10.0.0.2/32"),
+		GenerateWireguardClient("10.0.0.3/32"),
 	}
 
 	writeWireguardServerConfig(os.Stdout, server, clients)
