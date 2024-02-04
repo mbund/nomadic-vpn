@@ -2,18 +2,14 @@ package provider
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/pem"
+	_ "embed"
+	b64 "encoding/base64"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
-	"github.com/mbund/nomadic-vpn/core"
 	"github.com/mbund/nomadic-vpn/db"
 	"github.com/vultr/govultr/v3"
-	"golang.org/x/crypto/ssh"
 	"golang.org/x/oauth2"
 )
 
@@ -61,7 +57,43 @@ type VultrProvider struct {
 	LocationCode string
 }
 
-func (v VultrProvider) Bootstrap() error {
+func (v VultrProvider) CreateInstance(cloudConfig string) (string, error) {
+	apiKey, err := db.GetVultrAPIKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get Vultr API key: %v", err)
+	}
+
+	config := &oauth2.Config{}
+	ctx := context.Background()
+	ts := config.TokenSource(ctx, &oauth2.Token{AccessToken: apiKey})
+	vultrClient := govultr.NewClient(oauth2.NewClient(ctx, ts))
+
+	instance, _, err := vultrClient.Instance.Create(context.Background(), &govultr.InstanceCreateReq{
+		Label:    "nomadic-vpn",
+		Backups:  "disabled",
+		OsID:     2136, // Debian 12 x64 (bookworm)
+		Plan:     v.PlanId,
+		Region:   v.LocationCode,
+		UserData: b64.StdEncoding.EncodeToString([]byte(cloudConfig)),
+		Tags:     []string{"nomadic-vpn"},
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("failed to create instance: %v", err)
+	}
+
+	instanceId := instance.ID
+	fmt.Println("Creating instance")
+
+	for instance == nil || instance.Status != "active" {
+		time.Sleep(30 * time.Second)
+		instance, _, _ = vultrClient.Instance.Get(context.Background(), instanceId)
+	}
+
+	return instance.MainIP, nil
+}
+
+func (v VultrProvider) DestroyInstance(ip string) error {
 	apiKey, err := db.GetVultrAPIKey()
 	if err != nil {
 		return nil
@@ -72,70 +104,20 @@ func (v VultrProvider) Bootstrap() error {
 	ts := config.TokenSource(ctx, &oauth2.Token{AccessToken: apiKey})
 	vultrClient := govultr.NewClient(oauth2.NewClient(ctx, ts))
 
-	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
-	sshPublicKey, _ := ssh.NewPublicKey(publicKey)
-	sshPublicKeyString := string(ssh.MarshalAuthorizedKey(sshPublicKey))
-
-	vultrSshKey, _, err := vultrClient.SSHKey.Create(context.Background(), &govultr.SSHKeyReq{
-		Name:   "nomadic-vpn",
-		SSHKey: sshPublicKeyString,
+	instances, _, _, err := vultrClient.Instance.List(context.Background(), &govultr.ListOptions{
+		MainIP: ip,
 	})
-
 	if err != nil {
-		fmt.Println(err)
-		panic("Failed to create SSH key")
+		return fmt.Errorf("failed to list instances: %v", err)
 	}
 
-	instance, _, err := vultrClient.Instance.Create(context.Background(), &govultr.InstanceCreateReq{
-		Label:   "nomadic-vpn",
-		Backups: "disabled",
-		OsID:    2136, // Debian 12 x64 (bookworm)
-		Plan:    v.PlanId,
-		Region:  v.LocationCode,
-		SSHKeys: []string{vultrSshKey.ID},
-	})
-
-	if err != nil {
-		fmt.Println(err)
-		panic("Failed to create instance")
-	}
-
-	instanceId := instance.ID
-	fmt.Println("Creating instance")
-
-	for instance == nil || instance.Status != "active" {
-		time.Sleep(30 * time.Second)
-		instance, _, _ = vultrClient.Instance.Get(context.Background(), instanceId)
+	if len(instances) > 0 {
+		instance := instances[0]
+		err := vultrClient.Instance.Delete(context.Background(), instance.ID)
 		if err != nil {
-			fmt.Println(err)
+			return fmt.Errorf("failed to delete instance: %v", err)
 		}
 	}
-
-	ip := instance.MainIP
-	fmt.Printf("Instance created with IP: %v\n", ip)
-
-	p, _ := ssh.MarshalPrivateKey(privateKey, "nomadic-vpn")
-	privateKeyPem := pem.EncodeToMemory(p)
-	os.WriteFile("ssh_key", privateKeyPem, 0600)
-
-	signer, _ := ssh.ParsePrivateKey(privateKeyPem)
-	sshConfig := &ssh.ClientConfig{
-		User: "root",
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-
-	fmt.Println("Dialing SSH")
-	conn, err := ssh.Dial("tcp", ip+":22", sshConfig)
-	if err != nil {
-		log.Fatalf("Failed to dial: %v", err)
-	}
-
-	defer conn.Close()
-
-	core.Bootstrap(conn)
 
 	return nil
 }

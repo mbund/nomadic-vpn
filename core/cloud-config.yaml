@@ -1,0 +1,54 @@
+#cloud-config
+
+packages:
+  - wireguard
+
+runcmd:
+  - wget https://github.com/mbund/nomadic-vpn/releases/latest/download/nomadic-vpn-linux-amd64 -O /usr/local/sbin/nomadic-vpn
+  - chmod +x /usr/local/sbin/nomadic-vpn
+  - systemctl start nomadic-vpn.service wireguard-config.path wireguard-config.service
+  - systemctl enable nomadic-vpn.service wireguard-config.path wireguard-config.service
+  - ufw disable
+
+write_files:
+  - path: /etc/systemd/system/nomadic-vpn.service
+    owner: root:root
+    permissions: "0755"
+    content: |
+      [Unit]
+      Description=Nomadic VPN Server
+      Documentation=https://github.com/mbund/nomadic-vpn
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/sbin/nomadic-vpn web --token "{{.Token}}" --domain "{{.Domain}}"
+      WorkingDirectory=/root
+
+      [Install]
+      WantedBy=default.target
+  - path: /etc/systemd/system/wireguard-config.path
+    owner: root:root
+    permissions: "0755"
+    content: |
+      [Unit]
+      Description=Watch /etc/wireguard/wg0.conf for changes
+
+      [Path]
+      PathModified=/etc/wireguard/wg0.conf
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/wireguard-config.service
+    owner: root:root
+    permissions: "0755"
+    content: |
+      [Unit]
+      Description=Restart WireGuard
+      After=network.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/systemctl restart wg-quick@wg0.service
+
+      [Install]
+      RequiredBy=wireguard-config.path

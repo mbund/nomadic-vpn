@@ -14,7 +14,13 @@ type Plan struct {
 }
 
 type Provider interface {
-	Bootstrap() error
+	// Create a new VPS instance
+	//
+	// Returns the IP address of the new instance
+	CreateInstance(cloudConfig string) (string, error)
+
+	// Destroy a VPS instance
+	DestroyInstance(ip string) error
 }
 
 func InitializeProviders() {
