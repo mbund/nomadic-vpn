@@ -1,13 +1,16 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	_ "embed"
+	b64 "encoding/base64"
 	"encoding/pem"
 	"fmt"
-	"log"
 	"os"
+	"text/template"
 	"time"
 
 	"github.com/mbund/nomadic-vpn/core"
@@ -15,6 +18,7 @@ import (
 	"github.com/vultr/govultr/v3"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/oauth2"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 func initializeVultr() {
@@ -56,6 +60,9 @@ func initializeVultr() {
 	}
 }
 
+//go:embed cloud-config.yaml
+var cloudConfigTemplate string
+
 type VultrProvider struct {
 	PlanId       string
 	LocationCode string
@@ -86,13 +93,26 @@ func (v VultrProvider) Bootstrap() error {
 		panic("Failed to create SSH key")
 	}
 
+	// this key does not have to be a wireguard style key, but should be cryptographically secure
+	key, _ := wgtypes.GenerateKey()
+	accessToken := key.String()
+
+	t, _ := template.New("cloud-config").Parse(cloudConfigTemplate)
+	var cloudConfig bytes.Buffer
+	t.Execute(&cloudConfig, map[string]interface{}{
+		"Token": accessToken,
+	})
+	userData := b64.StdEncoding.EncodeToString(cloudConfig.Bytes())
+
 	instance, _, err := vultrClient.Instance.Create(context.Background(), &govultr.InstanceCreateReq{
-		Label:   "nomadic-vpn",
-		Backups: "disabled",
-		OsID:    2136, // Debian 12 x64 (bookworm)
-		Plan:    v.PlanId,
-		Region:  v.LocationCode,
-		SSHKeys: []string{vultrSshKey.ID},
+		Label:    "nomadic-vpn",
+		Backups:  "disabled",
+		OsID:     2136, // Debian 12 x64 (bookworm)
+		Plan:     v.PlanId,
+		Region:   v.LocationCode,
+		UserData: userData,
+		SSHKeys:  []string{vultrSshKey.ID},
+		Tags:     []string{"nomadic-vpn"},
 	})
 
 	if err != nil {
@@ -118,24 +138,7 @@ func (v VultrProvider) Bootstrap() error {
 	privateKeyPem := pem.EncodeToMemory(p)
 	os.WriteFile("ssh_key", privateKeyPem, 0600)
 
-	signer, _ := ssh.ParsePrivateKey(privateKeyPem)
-	sshConfig := &ssh.ClientConfig{
-		User: "root",
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-
-	fmt.Println("Dialing SSH")
-	conn, err := ssh.Dial("tcp", ip+":22", sshConfig)
-	if err != nil {
-		log.Fatalf("Failed to dial: %v", err)
-	}
-
-	defer conn.Close()
-
-	core.Bootstrap(conn)
+	core.Connect(ip, accessToken)
 
 	return nil
 }
