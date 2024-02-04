@@ -6,23 +6,17 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"text/template"
+	"time"
 
 	scp "github.com/bramvdbogaerde/go-scp"
 	"github.com/mbund/nomadic-vpn/db"
+	"github.com/spf13/viper"
 	"golang.org/x/crypto/ssh"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
-
-//go:embed nomadic-vpn.service
-var systemdNomadicVpnService []byte
-
-//go:embed wireguard-config.path
-var systemdWireguardConfigPath []byte
-
-//go:embed wireguard-config.service
-var systemdWireguardConfigService []byte
 
 func scpWriteData(sshClient *ssh.Client, data []byte, remotePath string) error {
 	reader := bytes.NewReader(data)
@@ -39,31 +33,6 @@ func scpWriteData(sshClient *ssh.Client, data []byte, remotePath string) error {
 
 	return nil
 }
-
-func scpCopyFile(sshClient *ssh.Client, filepath string, remotePath string) error {
-	file, err := os.Open(filepath)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %v", err)
-	}
-
-	scpClient, err := scp.NewClientBySSH(sshClient)
-	if err != nil {
-		return fmt.Errorf("failed to create client: %v", err)
-	}
-	defer scpClient.Close()
-
-	err = scpClient.CopyFromFile(context.Background(), *file, remotePath, "0755")
-	if err != nil {
-		return fmt.Errorf("failed to copy file %v to server: %v", file, err)
-	}
-
-	return nil
-}
-
-// func wireguard() {
-// 	key, _ := wgtypes.GeneratePrivateKey()
-// 	presharedKey, _ := wgtypes.GenerateKey()
-// }
 
 func generateClient(allowedIPs string) db.Client {
 	key, _ := wgtypes.GenerateKey()
@@ -130,24 +99,7 @@ func Bootstrap(sshClient *ssh.Client) error {
 		return fmt.Errorf("failed to write wireguard server config: %v", err)
 	}
 
-	// copy self to server
-	// fmt.Println("Copying self to server")
-	// self, err := os.Executable()
-	// if err != nil {
-	// 	return fmt.Errorf("failed to get path to self executable: %v", err)
-	// }
-	// scpWriteFile(sshClient, self, "/usr/local/sbin/nomadic-vpn")
-
-	scpWriteData(sshClient, systemdNomadicVpnService, "/etc/systemd/system/nomadic-vpn.service")
-	scpWriteData(sshClient, systemdWireguardConfigPath, "/etc/systemd/system/wireguard-config.path")
-	scpWriteData(sshClient, systemdWireguardConfigService, "/etc/systemd/system/wireguard-config.service")
-
-	// copy db to server
-	scpCopyFile(sshClient, "nomadic-vpn.db", "nomadic-vpn.db")
-	os.Remove("nomadic-vpn.db")
-
 	// run commands
-
 	commands := []string{
 		"wget https://github.com/mbund/nomadic-vpn/releases/latest/download/nomadic-vpn-linux-amd64 -O /usr/local/sbin/nomadic-vpn",
 		"apt install -y wireguard",
@@ -179,5 +131,33 @@ func runCommand(sshClient *ssh.Client, command string) error {
 		return fmt.Errorf("failed to run command %v: %v", command, err)
 	}
 
+	return nil
+}
+
+func Connect(ip string, accessToken string) error {
+	for {
+		result, err := http.Get(fmt.Sprintf("http://%v/healthz", ip))
+		if err != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		if result.StatusCode == 200 {
+			break
+		}
+	}
+
+	fmt.Println("Connected to server")
+
+	return nil
+}
+
+func UpdateDuckDNS(ip string) error {
+	domain := viper.GetString("DUCKDNS_DOMAIN")
+	token := viper.GetString("DUCKDNS_TOKEN")
+	_, err := http.Get(fmt.Sprintf("https://www.duckdns.org/update?domains=%v&token=%v&ip=%v", domain, token, ip))
+	if err != nil {
+		return fmt.Errorf("failed to update duckdns: %v", err)
+	}
 	return nil
 }
