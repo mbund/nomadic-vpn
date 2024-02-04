@@ -27,5 +27,4 @@ func init() {
 	webCmd.MarkFlagRequired("token")
 
 	webCmd.Flags().StringVarP(&domain, "domain", "d", "", "Domain to listen on")
-	webCmd.MarkFlagRequired("domain")
 }
